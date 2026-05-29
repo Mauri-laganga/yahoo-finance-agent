@@ -1,46 +1,93 @@
 # API Agente Financiero
 
-Backend en Python con FastAPI, LangChain y Yahoo Finance para exponer un agente conversacional con memoria independiente por `conversation_id`.
+Backend en Python con FastAPI, LangChain opcional y Yahoo Finance. Expone un agente conversacional con memoria independiente por `conversation_id`, fallback determinístico sin LLM y una UI mínima para probar desde navegador.
 
 ## Arquitectura
 
 ```text
 app/
-├── main.py
-├── api/
-│   └── rutas_chat.py
-├── agentes/
-│   └── agente_conversacional.py
-├── core/
-│   ├── configuracion.py
-│   ├── dependencias.py
-│   └── logs.py
-├── herramientas/
-│   └── herramienta_financiera.py
-├── modelos/
-│   ├── esquemas_chat.py
-│   └── mensaje.py
-├── repositorios/
-│   └── repositorio_memoria.py
-└── servicios/
-    └── servicio_chat.py
+├── api/                 # Entradas HTTP
+├── casos_uso/           # Orquestación de casos de uso
+├── agentes/             # agent_loop y grafo de estados
+├── dominio/             # Conceptos del dominio del agente
+├── puertos/             # Contratos internos
+├── adaptadores/         # Implementaciones concretas
+├── repositorios/        # Nombres compatibles históricos
+├── herramientas/        # Yahoo Finance como tool
+├── modelos/             # Modelos Pydantic
+└── core/                # Configuración, dependencias y logs
 ```
 
-La API delega la lógica de negocio en `ServicioConversacional`. La memoria vive en `RepositorioMemoria`, abstraída detrás de una clase thread-safe para poder migrarla después a Redis o PostgreSQL. La consulta financiera está encapsulada en `HerramientaFinanciera`, reutilizable como tool de LangChain.
+Flujo conceptual:
 
-## Decisiones técnicas
+```text
+API / Entradas
+  -> Casos de Uso
+  -> Agente Conversacional
+  -> Puertos
+  -> Adaptadores
+```
 
-- FastAPI expone endpoints tipados con modelos Pydantic y documentación automática en `/docs`.
-- La memoria se mantiene en RAM con un diccionario protegido por `RLock`.
-- `agent_loop` muestra explícitamente el flujo del agente: recibe el mensaje, lee historial, evalúa contexto, decide si usa tool, ejecuta Yahoo Finance, suma el resultado y genera la respuesta.
-- Si `OPENAI_API_KEY` está configurada, la respuesta final se redacta con `ChatOpenAI` mediante LangChain.
-- Si no hay API key, la API sigue funcionando con respuesta determinística, útil para correr el challenge sin servicios externos pagos.
+La reorganización es hexagonal ligera: `PuertoMemoria` define el contrato, `ImplementacionMemoriaRAM` lo implementa, y `RepositorioMemoria` queda como alias compatible para no romper imports existentes.
+
+## Grafo Del Agente
+
+`agent_loop` mantiene su firma pública, pero internamente recorre estados explícitos:
+
+```text
+INICIO
+  -> LEER_HISTORIAL
+  -> ANALIZAR_INTENCION
+  -> DECIDIR_HERRAMIENTA
+  -> EJECUTAR_HERRAMIENTA
+  -> GENERAR_RESPUESTA
+  -> FINALIZAR
+```
+
+Cada estado registra logs con `conversation_id`, decisión, símbolo financiero, uso de herramienta y errores. El grafo vive en `app/dominio/estados_agente.py`, lo que permite extender el agente sin convertir el flujo en lógica implícita.
+
+## Memoria
+
+La memoria sigue funcionando por `conversation_id`.
+
+- Adaptador actual: RAM thread-safe con `RLock`.
+- Puerto: `PuertoMemoria`.
+- Compatibilidad: `RepositorioMemoria`.
+- Límite configurable: `max_mensajes_historial`, por defecto `30`.
+- Truncamiento: conserva los mensajes más recientes y evita iniciar el historial visible con una respuesta huérfana cuando es posible.
+
+La estructura queda preparada para futuros adaptadores Redis o PostgreSQL sin cambiar los endpoints.
+
+## Yahoo Finance
+
+`HerramientaFinanciera` consulta Yahoo Finance con `yfinance` y expone una tool compatible con LangChain. Intenta primero `fast_info` y usa `history(period="1d")` como fallback. Devuelve precio, variación, market cap, moneda, mercado, empresa y fuente cuando están disponibles.
+
+## LLM Opcional
+
+Si `OPENAI_API_KEY` está configurada, el agente usa `ChatOpenAI` para redactar la respuesta final. Si no existe API key o falta `langchain-openai`, la API sigue funcionando con respuesta determinística.
 
 ## Endpoints
 
-### `POST /chat`
+### `GET /`
 
-Envía un mensaje a una conversación.
+```json
+{
+  "nombre": "API Agente Financiero",
+  "version": "1.0.0",
+  "docs": "/docs"
+}
+```
+
+### `GET /health`
+
+```json
+{
+  "status": "ok",
+  "version": "1.0.0"
+}
+```
+
+### `POST /chat`
 
 ```json
 {
@@ -60,30 +107,36 @@ Respuesta:
 
 ### `GET /chat/{id}`
 
-Devuelve el historial completo de una conversación.
+Devuelve el historial de una conversación.
 
-## Correr localmente
+### `GET /chat-ui`
+
+Página HTML simple servida por FastAPI. Permite ingresar `conversation_id`, enviar mensajes y visualizar historial sin React ni frontend complejo.
+
+## Correr Localmente
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-La API queda disponible en:
+URLs:
 
 - `http://127.0.0.1:8000`
 - `http://127.0.0.1:8000/docs`
+- `http://127.0.0.1:8000/chat-ui`
 
-Opcionalmente podés configurar un LLM:
+Variables opcionales:
 
 ```bash
 export OPENAI_API_KEY="tu_api_key"
 export MODELO_LLM="gpt-4o-mini"
+export MAX_MENSAJES_HISTORIAL=30
 ```
 
-## Correr con Docker
+## Correr Con Docker
 
 ```bash
 docker build -t api-agente-financiero .
@@ -96,22 +149,53 @@ Con API key:
 docker run --rm -p 8000:8000 -e OPENAI_API_KEY="tu_api_key" api-agente-financiero
 ```
 
-## Ejemplos curl
+## Tests
+
+```bash
+pytest -q
+```
+
+La suite cubre:
+
+- memoria y truncamiento configurable
+- conversaciones independientes
+- contrato del endpoint chat
+- integración financiera mockeada
+
+## Ejemplos Curl
+
+Healthcheck:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
 
 Crear o continuar conversación:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"conversation_id":"abc123","mensaje":"¿Cómo está Apple hoy?"}'
+  -d '{"conversation_id":"abc123","mensaje":"¿Cómo está AAPL hoy?"}'
 ```
 
-Consultar seguimiento usando el historial:
+Consultar seguimiento usando historial:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/chat \
   -H "Content-Type: application/json" \
   -d '{"conversation_id":"abc123","mensaje":"¿Y su variación?"}'
+```
+
+Consultar otras acciones:
+
+```bash
+curl -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"conversation_id":"msft-demo","mensaje":"MSFT"}'
+
+curl -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"conversation_id":"tsla-demo","mensaje":"TSLA"}'
 ```
 
 Obtener historial:
@@ -120,20 +204,6 @@ Obtener historial:
 curl http://127.0.0.1:8000/chat/abc123
 ```
 
-## Flujo del agente
+## Estado Actual
 
-La función `agent_loop` representa el recorrido principal:
-
-1. Recibe `conversation_id`, mensaje e historial.
-2. Normaliza y valida el mensaje.
-3. Lee el historial conversacional recibido desde el repositorio.
-4. Evalúa si el contexto requiere información financiera.
-5. Decide si debe usar la tool financiera y qué símbolo consultar.
-6. Ejecuta `HerramientaFinanciera` con Yahoo Finance cuando corresponde.
-7. Incorpora el resultado de la tool al contexto.
-8. Genera la respuesta final con LangChain y LLM opcional, o con una salida determinística si no hay API key.
-9. El servicio guarda el mensaje del usuario y la respuesta del asistente en la memoria de esa conversación.
-
-## Notas
-
-No se implementan autenticación, base de datos real, frontend, websocket, Redis, docker compose ni streaming. El foco es dejar una base simple, clara y lista para evolucionar.
+No se implementan autenticación, base de datos real, Redis, docker compose, websocket ni streaming. La base queda simple, compatible con los contratos existentes y preparada para evolucionar hacia producción.

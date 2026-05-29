@@ -1,13 +1,21 @@
 import logging
 import re
 from dataclasses import dataclass
+from typing import Callable
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
+from app.dominio.estados_agente import EstadoAgente, TRANSICIONES_AGENT_LOOP
 from app.herramientas.herramienta_financiera import HerramientaFinanciera
 from app.modelos.mensaje import MensajeConversacion, RolMensaje
+from app.utils.constantes import (
+    EMPRESAS_CONOCIDAS,
+    PALABRAS_FINANCIERAS,
+    PALABRAS_NO_TICKER,
+    PATRON_TICKER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,40 +27,22 @@ class DecisionHerramienta:
     motivo: str
 
 
-EMPRESAS_CONOCIDAS: dict[str, str] = {
-    "apple": "AAPL",
-    "microsoft": "MSFT",
-    "google": "GOOGL",
-    "alphabet": "GOOGL",
-    "amazon": "AMZN",
-    "tesla": "TSLA",
-    "nvidia": "NVDA",
-    "meta": "META",
-    "facebook": "META",
-    "netflix": "NFLX",
-    "mercado libre": "MELI",
-    "mercadolibre": "MELI",
-    "coca cola": "KO",
-    "coca-cola": "KO",
-    "walmart": "WMT",
-    "disney": "DIS",
-}
-
-PALABRAS_FINANCIERAS = (
-    "accion",
-    "acciones",
-    "bolsa",
-    "cotiza",
-    "cotizacion",
-    "financ",
-    "market cap",
-    "mercado",
-    "precio",
-    "ticker",
-    "variacion",
-    "valor",
-    "yahoo",
-)
+@dataclass
+class ContextoAgentLoop:
+    conversation_id: str
+    mensaje_usuario: str
+    historial: list[MensajeConversacion]
+    herramienta_financiera: HerramientaFinanciera
+    llm: BaseChatModel | None
+    mensaje_limpio: str = ""
+    contexto_historial: str = ""
+    decision: DecisionHerramienta = DecisionHerramienta(
+        False,
+        None,
+        "El agente todavía no evaluó intención.",
+    )
+    resultado_herramienta: str | None = None
+    respuesta: str = ""
 
 
 def agent_loop(
@@ -63,41 +53,105 @@ def agent_loop(
     herramienta_financiera: HerramientaFinanciera,
     llm: BaseChatModel | None = None,
 ) -> str:
-    """Flujo explícito del agente: contexto, decisión, tool y respuesta final."""
+    """Grafo de estados del agente: contexto, decisión, tool y respuesta final."""
     logger.info("Iniciando agent_loop para conversation_id=%s", conversation_id)
 
-    mensaje_limpio = mensaje_usuario.strip()
-    if not mensaje_limpio:
-        raise ValueError("El mensaje no puede estar vacío.")
-
-    contexto_historial = _formatear_historial(historial)
-    logger.debug("Historial leído para %s: %s mensajes", conversation_id, len(historial))
-
-    decision = _evaluar_contexto_y_decidir_herramienta(
-        mensaje=mensaje_limpio,
+    contexto = ContextoAgentLoop(
+        conversation_id=conversation_id,
+        mensaje_usuario=mensaje_usuario,
         historial=historial,
-    )
-    logger.info(
-        "Decisión de herramienta para %s: usar=%s simbolo=%s motivo=%s",
-        conversation_id,
-        decision.usar_herramienta,
-        decision.simbolo,
-        decision.motivo,
-    )
-
-    resultado_herramienta: str | None = None
-    if decision.usar_herramienta and decision.simbolo:
-        resultado_herramienta = herramienta_financiera.ejecutar_como_tool(decision.simbolo)
-
-    respuesta = _generar_respuesta_final(
-        mensaje=mensaje_limpio,
-        contexto_historial=contexto_historial,
-        decision=decision,
-        resultado_herramienta=resultado_herramienta,
+        herramienta_financiera=herramienta_financiera,
         llm=llm,
     )
+    handlers: dict[EstadoAgente, Callable[[ContextoAgentLoop], None]] = {
+        EstadoAgente.INICIO: _iniciar_agent_loop,
+        EstadoAgente.LEER_HISTORIAL: _leer_historial,
+        EstadoAgente.ANALIZAR_INTENCION: _analizar_intencion,
+        EstadoAgente.DECIDIR_HERRAMIENTA: _registrar_decision_herramienta,
+        EstadoAgente.EJECUTAR_HERRAMIENTA: _ejecutar_herramienta,
+        EstadoAgente.GENERAR_RESPUESTA: _generar_respuesta,
+    }
+    estado = EstadoAgente.INICIO
+
+    while estado != EstadoAgente.FINALIZAR:
+        logger.info("Agente estado=%s conversation_id=%s", estado.value, conversation_id)
+        handlers[estado](contexto)
+        estado = TRANSICIONES_AGENT_LOOP[estado]
+
+    logger.info("Agente estado=%s conversation_id=%s", EstadoAgente.FINALIZAR.value, conversation_id)
     logger.info("agent_loop finalizado para conversation_id=%s", conversation_id)
-    return respuesta
+    return contexto.respuesta
+
+
+def _iniciar_agent_loop(contexto: ContextoAgentLoop) -> None:
+    contexto.mensaje_limpio = contexto.mensaje_usuario.strip()
+    if not contexto.mensaje_limpio:
+        raise ValueError("El mensaje no puede estar vacío.")
+
+
+def _leer_historial(contexto: ContextoAgentLoop) -> None:
+    contexto.contexto_historial = _formatear_historial(contexto.historial)
+    logger.debug(
+        "Historial leído conversation_id=%s mensajes=%s",
+        contexto.conversation_id,
+        len(contexto.historial),
+    )
+
+
+def _analizar_intencion(contexto: ContextoAgentLoop) -> None:
+    contexto.decision = _evaluar_contexto_y_decidir_herramienta(
+        mensaje=contexto.mensaje_limpio,
+        historial=contexto.historial,
+    )
+    logger.info(
+        "Agente decisión conversation_id=%s usar_herramienta=%s simbolo=%s motivo=%s",
+        contexto.conversation_id,
+        contexto.decision.usar_herramienta,
+        contexto.decision.simbolo,
+        contexto.decision.motivo,
+    )
+
+
+def _registrar_decision_herramienta(contexto: ContextoAgentLoop) -> None:
+    if contexto.decision.usar_herramienta:
+        return
+    logger.info(
+        "Agente sin herramienta conversation_id=%s motivo=%s",
+        contexto.conversation_id,
+        contexto.decision.motivo,
+    )
+
+
+def _ejecutar_herramienta(contexto: ContextoAgentLoop) -> None:
+    if not contexto.decision.usar_herramienta or not contexto.decision.simbolo:
+        return
+
+    logger.info(
+        "Agente ejecuta herramienta_financiera conversation_id=%s simbolo=%s",
+        contexto.conversation_id,
+        contexto.decision.simbolo,
+    )
+    try:
+        contexto.resultado_herramienta = contexto.herramienta_financiera.ejecutar_como_tool(
+            contexto.decision.simbolo,
+        )
+    except Exception:
+        logger.exception(
+            "Error ejecutando herramienta_financiera conversation_id=%s simbolo=%s",
+            contexto.conversation_id,
+            contexto.decision.simbolo,
+        )
+        raise
+
+
+def _generar_respuesta(contexto: ContextoAgentLoop) -> None:
+    contexto.respuesta = _generar_respuesta_final(
+        mensaje=contexto.mensaje_limpio,
+        contexto_historial=contexto.contexto_historial,
+        decision=contexto.decision,
+        resultado_herramienta=contexto.resultado_herramienta,
+        llm=contexto.llm,
+    )
 
 
 def _evaluar_contexto_y_decidir_herramienta(
@@ -129,24 +183,36 @@ def _evaluar_contexto_y_decidir_herramienta(
 
 def _extraer_simbolo(texto: str) -> str | None:
     texto_normalizado = texto.lower()
-    for nombre_empresa, simbolo in EMPRESAS_CONOCIDAS.items():
-        if nombre_empresa in texto_normalizado:
-            return simbolo
+    simbolo_empresa = next(
+        (
+            simbolo
+            for nombre_empresa, simbolo in EMPRESAS_CONOCIDAS.items()
+            if nombre_empresa in texto_normalizado
+        ),
+        None,
+    )
+    if simbolo_empresa:
+        return simbolo_empresa
 
-    coincidencias = re.findall(r"\b[A-Z]{1,5}(?:\.[A-Z]{1,2})?\b", texto)
-    palabras_no_ticker = {"API", "CEO", "USD", "IA", "AI"}
-    for coincidencia in coincidencias:
-        if coincidencia not in palabras_no_ticker:
-            return coincidencia
-    return None
+    coincidencias = re.findall(PATRON_TICKER, texto)
+    return next(
+        (coincidencia for coincidencia in coincidencias if coincidencia not in PALABRAS_NO_TICKER),
+        None,
+    )
 
 
 def _buscar_ultimo_simbolo_en_historial(historial: list[MensajeConversacion]) -> str | None:
-    for mensaje in reversed(historial):
-        simbolo = _extraer_simbolo(mensaje.contenido)
-        if simbolo:
-            return simbolo
-    return None
+    return next(
+        (
+            simbolo
+            for simbolo in (
+                _extraer_simbolo(mensaje.contenido)
+                for mensaje in reversed(historial)
+            )
+            if simbolo
+        ),
+        None,
+    )
 
 
 def _parece_pedido_financiero_corto(texto: str) -> bool:

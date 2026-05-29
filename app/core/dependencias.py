@@ -8,7 +8,10 @@ from app.servicios.servicio_chat import ServicioConversacional
 
 @lru_cache
 def obtener_repositorio_memoria() -> RepositorioMemoria:
-    return RepositorioMemoria()
+    configuracion = obtener_configuracion()
+    return RepositorioMemoria(
+        max_mensajes_historial=configuracion.max_mensajes_historial,
+    )
 
 
 @lru_cache
