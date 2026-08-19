@@ -22,7 +22,7 @@ class FakeTicker:
         }
 
 
-def test_herramienta_financiera_usa_yahoo_mockeado(monkeypatch) -> None:
+def test_herramienta_financiera(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.herramientas.herramienta_financiera.yf.Ticker",
         FakeTicker,

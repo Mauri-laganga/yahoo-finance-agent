@@ -2,8 +2,10 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+# pyrefly: ignore [missing-import]
 import yfinance as yf
-from langchain_core.tools import StructuredTool, tool
+# pyrefly: ignore [missing-import]
+from langchain_core.tools import StructuredTool
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +36,6 @@ class InfoAccion:
                 self.mercado,
             )
         )
-
-
-@tool("consultar_finanzas_yahoo")
-def consultar_finanzas_yahoo(simbolo: str) -> str:
-    """Consulta precio, variación, market cap, moneda y metadata en Yahoo Finance."""
-    return HerramientaFinanciera().consultar(simbolo)
 
 
 class HerramientaFinanciera:
@@ -144,18 +140,25 @@ class HerramientaFinanciera:
         return datos
 
     def _leer_fast_info(self, fast_info: Any, *claves: str) -> Any:
+        """Lee un valor de fast_info probando acceso por atributo y por clave de dict."""
         for clave in claves:
+            # fast_info de yfinance es un objeto con atributos (ej: fast_info.last_price).
+            # También puede exponerse como dict-like en algunas versiones.
+            # Probamos primero acceso por atributo, luego por clave de dict.
             try:
-                if hasattr(fast_info, "get"):
-                    valor = fast_info.get(clave)
-                else:
-                    valor = fast_info[clave]
+                valor = getattr(fast_info, clave, None)
+                if valor is not None:
+                    return valor
             except Exception as error:
-                logger.debug("Yahoo Finance: no se pudo leer fast_info[%s]: %s", clave, error)
-                continue
+                logger.debug("Yahoo Finance: getattr fast_info.%s falló: %s", clave, error)
 
-            if valor is not None:
-                return valor
+            try:
+                valor = fast_info[clave]
+                if valor is not None:
+                    return valor
+            except Exception as error:
+                logger.debug("Yahoo Finance: fast_info[%s] falló: %s", clave, error)
+
         return None
 
     def _obtener_metadata_basica(self, ticker: Any) -> dict[str, Any]:

@@ -36,3 +36,27 @@ PALABRAS_FINANCIERAS = (
 )
 
 PALABRAS_NO_TICKER = frozenset({"API", "CEO", "USD", "IA", "AI"})
+
+PALABRAS_META_HISTORIAL = (
+    "que te pregunte",
+    "que me preguntaste",
+    "que te dije",
+    "que me dijiste",
+    "que me respondiste",
+    "que me contestaste",
+    "que hablamos",
+    "de que hablamos",
+    "ultima pregunta",
+    "ultimo mensaje",
+    "acabo de preguntar",
+    "acabo de decir",
+    "me acabas de",
+    "acabas de decir",
+    "acabas de responder",
+    "repetilo",
+    "repeti eso",
+    "acordas",
+    "recordas",
+    "lo anterior",
+    "antes pregunte",
+)
