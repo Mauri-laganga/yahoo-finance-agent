@@ -1,10 +1,12 @@
+# pyrefly: ignore [missing-import]
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.core.autenticacion import verificar_api_key
 from app.core.dependencias import obtener_servicio_chat
 from app.modelos.esquemas_chat import PedidoChat, RespuestaChat, RespuestaHistorial
 from app.servicios.servicio_chat import ServicioConversacional
 
-router = APIRouter(tags=["chat"])
+router = APIRouter(tags=["chat"], dependencies=[Depends(verificar_api_key)])
 
 
 @router.post("/chat", response_model=RespuestaChat)

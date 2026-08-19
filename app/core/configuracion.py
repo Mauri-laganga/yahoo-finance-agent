@@ -1,6 +1,8 @@
 from functools import lru_cache
 
-from pydantic import Field
+# pyrefly: ignore [missing-import]
+from pydantic import Field, field_validator
+# pyrefly: ignore [missing-import]
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +13,24 @@ class Configuracion(BaseSettings):
     max_mensajes_historial: int = 30
     openai_api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     modelo_llm: str = "gpt-4o-mini"
+    api_keys: frozenset[str] = Field(
+        default_factory=frozenset,
+        validation_alias="API_KEYS",
+        description=(
+            "Claves de API válidas, separadas por coma. "
+            "Si está vacío, la autenticación está deshabilitada."
+        ),
+    )
+
+    @field_validator("api_keys", mode="before")
+    @classmethod
+    def parsear_api_keys(cls, valor: object) -> frozenset[str]:
+        """Parsea API_KEYS: acepta string CSV, colecciones o None."""
+        if not valor:
+            return frozenset()
+        if isinstance(valor, frozenset | set | list | tuple):
+            return frozenset(str(k).strip() for k in valor if str(k).strip())
+        return frozenset(k.strip() for k in str(valor).split(",") if k.strip())
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 

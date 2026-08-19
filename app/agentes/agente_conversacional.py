@@ -1,10 +1,14 @@
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Callable
 
+# pyrefly: ignore [missing-import]
 from langchain_core.language_models.chat_models import BaseChatModel
+# pyrefly: ignore [missing-import]
 from langchain_core.output_parsers import StrOutputParser
+# pyrefly: ignore [missing-import]
 from langchain_core.prompts import ChatPromptTemplate
 
 from app.dominio.estados_agente import EstadoAgente, TRANSICIONES_AGENT_LOOP
@@ -13,6 +17,7 @@ from app.modelos.mensaje import MensajeConversacion, RolMensaje
 from app.utils.constantes import (
     EMPRESAS_CONOCIDAS,
     PALABRAS_FINANCIERAS,
+    PALABRAS_META_HISTORIAL,
     PALABRAS_NO_TICKER,
     PATRON_TICKER,
 )
@@ -148,6 +153,7 @@ def _generar_respuesta(contexto: ContextoAgentLoop) -> None:
     contexto.respuesta = _generar_respuesta_final(
         mensaje=contexto.mensaje_limpio,
         contexto_historial=contexto.contexto_historial,
+        historial=contexto.historial,
         decision=contexto.decision,
         resultado_herramienta=contexto.resultado_herramienta,
         llm=contexto.llm,
@@ -159,7 +165,7 @@ def _evaluar_contexto_y_decidir_herramienta(
     mensaje: str,
     historial: list[MensajeConversacion],
 ) -> DecisionHerramienta:
-    texto = mensaje.lower()
+    texto = _normalizar_texto(mensaje)
     simbolo = _extraer_simbolo(mensaje)
     tiene_intencion_financiera = any(palabra in texto for palabra in PALABRAS_FINANCIERAS)
 
@@ -181,8 +187,14 @@ def _evaluar_contexto_y_decidir_herramienta(
     return DecisionHerramienta(False, None, "No se detectó necesidad de consultar finanzas.")
 
 
+def _normalizar_texto(texto: str) -> str:
+    """Convierte a minúsculas y elimina acentos para comparación robusta."""
+    texto_lower = texto.lower()
+    return unicodedata.normalize("NFD", texto_lower).encode("ascii", "ignore").decode("ascii")
+
+
 def _extraer_simbolo(texto: str) -> str | None:
-    texto_normalizado = texto.lower()
+    texto_normalizado = _normalizar_texto(texto)
     simbolo_empresa = next(
         (
             simbolo
@@ -229,6 +241,7 @@ def _generar_respuesta_final(
     *,
     mensaje: str,
     contexto_historial: str,
+    historial: list[MensajeConversacion],
     decision: DecisionHerramienta,
     resultado_herramienta: str | None,
     llm: BaseChatModel | None,
@@ -240,15 +253,21 @@ def _generar_respuesta_final(
             mensaje=mensaje,
             decision=decision,
             resultado_herramienta=resultado_herramienta,
+            historial=historial,
         )
 
     prompt = ChatPromptTemplate.from_messages(
         [
             (
                 "system",
-                "Sos un agente conversacional claro, útil y breve. "
-                "Respondé en castellano argentino técnico. "
-                "Si hay datos financieros, explicalos sin inventar información.",
+                "Sos un agente financiero especializado en acciones y bolsa. "
+                "Respondé siempre en castellano argentino técnico y de forma breve. "
+                "Reglas:\n"
+                "1. Si hay datos financieros disponibles, explícalos sin inventar información.\n"
+                "2. Si el usuario pregunta sobre lo que se habló antes (meta-preguntas como '¿qué te pregunte?' o '¿de qué hablamos?'), "
+                "respondé resumiendo brevemente el historial de la conversación.\n"
+                "3. Si el usuario hace una pregunta fuera del dominio financiero (clima, deportes, noticias generales, etc.), "
+                "decliná educadamente e indicá que solo podés ayudar con consultas de acciones y finanzas.",
             ),
             (
                 "human",
@@ -271,20 +290,44 @@ def _generar_respuesta_final(
     )
 
 
+def _es_pregunta_sobre_historial(texto_normalizado: str) -> bool:
+    """Detecta si el usuario pregunta sobre la conversación previa (meta-pregunta)."""
+    return any(frase in texto_normalizado for frase in PALABRAS_META_HISTORIAL)
+
+
 def _generar_respuesta_sin_llm(
     *,
     mensaje: str,
     decision: DecisionHerramienta,
     resultado_herramienta: str | None,
+    historial: list[MensajeConversacion],
 ) -> str:
+    # Caso 1: se consultó Yahoo Finance → devuelve los datos directamente.
     if resultado_herramienta:
         return (
             f"Consulté Yahoo Finance para {decision.simbolo}. "
             f"{resultado_herramienta}"
         )
 
+    texto = _normalizar_texto(mensaje)
+
+    # Caso 2: el usuario pregunta sobre la conversación misma.
+    if _es_pregunta_sobre_historial(texto):
+        if not historial:
+            return (
+                "No tenemos historial previo en esta conversación todavía. "
+                "¿Querés consultar alguna acción o empresa?"
+            )
+        ultimos = historial[-4:]  # últimos 2 intercambios (usuario + asistente x2)
+        resumen = "\n".join(
+            f"  [{m.rol.value}]: {m.contenido}" for m in ultimos
+        )
+        return f"Esto es lo que hablamos recientemente:\n{resumen}"
+
+    # Caso 3: pregunta fuera del dominio financiero.
     return (
-        "Recibí tu mensaje y lo guardé en esta conversación. "
-        "Si querés consultar una acción, mencioná el ticker o la empresa, por ejemplo: "
-        "'¿Cómo está AAPL hoy?'."
+        "Solo puedo ayudarte con consultas financieras: precios de acciones, "
+        "cotizaciones, market cap y datos de bolsa. "
+        "Si querés consultar una empresa o ticker, mencionálo, "
+        "por ejemplo: '¿Cómo está AAPL hoy?' o 'precio de Apple'."
     )
