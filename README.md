@@ -123,13 +123,6 @@ URLs:
 - `http://127.0.0.1:8000`
 - `http://127.0.0.1:8000/docs`
 
-Variables opcionales (ver `.env.example`):
-
-```bash
-export API_KEYS="mi-clave-secreta"          # activa autenticación
-export MAX_MENSAJES_HISTORIAL=30
-```
-
 ## Correr Con Docker
 
 ```bash
