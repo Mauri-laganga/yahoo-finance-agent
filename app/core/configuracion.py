@@ -1,8 +1,6 @@
 from functools import lru_cache
 
-# pyrefly: ignore [missing-import]
 from pydantic import Field, field_validator
-# pyrefly: ignore [missing-import]
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,8 +9,6 @@ class Configuracion(BaseSettings):
     version_app: str = "1.0.0"
     nivel_log: str = "INFO"
     max_mensajes_historial: int = 30
-    openai_api_key: str | None = Field(default=None, validation_alias="OPENAI_API_KEY")
-    modelo_llm: str = "gpt-4o-mini"
     api_keys: frozenset[str] = Field(
         default_factory=frozenset,
         validation_alias="API_KEYS",

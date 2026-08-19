@@ -4,13 +4,6 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Callable
 
-# pyrefly: ignore [missing-import]
-from langchain_core.language_models.chat_models import BaseChatModel
-# pyrefly: ignore [missing-import]
-from langchain_core.output_parsers import StrOutputParser
-# pyrefly: ignore [missing-import]
-from langchain_core.prompts import ChatPromptTemplate
-
 from app.dominio.estados_agente import EstadoAgente, TRANSICIONES_AGENT_LOOP
 from app.herramientas.herramienta_financiera import HerramientaFinanciera
 from app.modelos.mensaje import MensajeConversacion, RolMensaje
@@ -38,7 +31,6 @@ class ContextoAgentLoop:
     mensaje_usuario: str
     historial: list[MensajeConversacion]
     herramienta_financiera: HerramientaFinanciera
-    llm: BaseChatModel | None
     mensaje_limpio: str = ""
     contexto_historial: str = ""
     decision: DecisionHerramienta = DecisionHerramienta(
@@ -56,7 +48,6 @@ def agent_loop(
     mensaje_usuario: str,
     historial: list[MensajeConversacion],
     herramienta_financiera: HerramientaFinanciera,
-    llm: BaseChatModel | None = None,
 ) -> str:
     """Grafo de estados del agente: contexto, decisión, tool y respuesta final."""
     logger.info("Iniciando agent_loop para conversation_id=%s", conversation_id)
@@ -66,7 +57,6 @@ def agent_loop(
         mensaje_usuario=mensaje_usuario,
         historial=historial,
         herramienta_financiera=herramienta_financiera,
-        llm=llm,
     )
     handlers: dict[EstadoAgente, Callable[[ContextoAgentLoop], None]] = {
         EstadoAgente.INICIO: _iniciar_agent_loop,
@@ -150,13 +140,11 @@ def _ejecutar_herramienta(contexto: ContextoAgentLoop) -> None:
 
 
 def _generar_respuesta(contexto: ContextoAgentLoop) -> None:
-    contexto.respuesta = _generar_respuesta_final(
+    contexto.respuesta = _generar_respuesta_deterministica(
         mensaje=contexto.mensaje_limpio,
-        contexto_historial=contexto.contexto_historial,
-        historial=contexto.historial,
         decision=contexto.decision,
         resultado_herramienta=contexto.resultado_herramienta,
-        llm=contexto.llm,
+        historial=contexto.historial,
     )
 
 
@@ -237,65 +225,12 @@ def _formatear_historial(historial: list[MensajeConversacion]) -> str:
     return "\n".join(f"{mensaje.rol.value}: {mensaje.contenido}" for mensaje in historial)
 
 
-def _generar_respuesta_final(
-    *,
-    mensaje: str,
-    contexto_historial: str,
-    historial: list[MensajeConversacion],
-    decision: DecisionHerramienta,
-    resultado_herramienta: str | None,
-    llm: BaseChatModel | None,
-) -> str:
-    contexto_tool = resultado_herramienta or "No se usó herramienta financiera."
-
-    if llm is None:
-        return _generar_respuesta_sin_llm(
-            mensaje=mensaje,
-            decision=decision,
-            resultado_herramienta=resultado_herramienta,
-            historial=historial,
-        )
-
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                "Sos un agente financiero especializado en acciones y bolsa. "
-                "Respondé siempre en castellano argentino técnico y de forma breve. "
-                "Reglas:\n"
-                "1. Si hay datos financieros disponibles, explícalos sin inventar información.\n"
-                "2. Si el usuario pregunta sobre lo que se habló antes (meta-preguntas como '¿qué te pregunte?' o '¿de qué hablamos?'), "
-                "respondé resumiendo brevemente el historial de la conversación.\n"
-                "3. Si el usuario hace una pregunta fuera del dominio financiero (clima, deportes, noticias generales, etc.), "
-                "decliná educadamente e indicá que solo podés ayudar con consultas de acciones y finanzas.",
-            ),
-            (
-                "human",
-                "Historial:\n{historial}\n\n"
-                "Mensaje actual:\n{mensaje}\n\n"
-                "Decisión de herramienta:\n{decision}\n\n"
-                "Resultado de herramienta:\n{resultado_tool}\n\n"
-                "Generá la respuesta final.",
-            ),
-        ]
-    )
-    cadena = prompt | llm | StrOutputParser()
-    return cadena.invoke(
-        {
-            "historial": contexto_historial,
-            "mensaje": mensaje,
-            "decision": decision,
-            "resultado_tool": contexto_tool,
-        }
-    )
-
-
 def _es_pregunta_sobre_historial(texto_normalizado: str) -> bool:
     """Detecta si el usuario pregunta sobre la conversación previa (meta-pregunta)."""
     return any(frase in texto_normalizado for frase in PALABRAS_META_HISTORIAL)
 
 
-def _generar_respuesta_sin_llm(
+def _generar_respuesta_deterministica(
     *,
     mensaje: str,
     decision: DecisionHerramienta,
@@ -318,7 +253,7 @@ def _generar_respuesta_sin_llm(
                 "No tenemos historial previo en esta conversación todavía. "
                 "¿Querés consultar alguna acción o empresa?"
             )
-        ultimos = historial[-4:]  # últimos 2 intercambios (usuario + asistente x2)
+        ultimos = historial[-4:] 
         resumen = "\n".join(
             f"  [{m.rol.value}]: {m.contenido}" for m in ultimos
         )
