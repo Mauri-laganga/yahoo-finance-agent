@@ -60,11 +60,7 @@ La estructura queda preparada para futuros adaptadores Redis o PostgreSQL sin ca
 
 ## Yahoo Finance
 
-`HerramientaFinanciera` consulta Yahoo Finance con `yfinance` y expone una tool compatible con LangChain. Intenta primero `fast_info` y usa `history(period="1d")` como fallback. Devuelve precio, variación, market cap, moneda, mercado, empresa y fuente cuando están disponibles.
-
-## LLM Opcional
-
-Si `OPENAI_API_KEY` está configurada, el agente usa `ChatOpenAI` para redactar la respuesta final. Si no existe API key o falta `langchain-openai`, la API sigue funcionando con respuesta determinística.
+`HerramientaFinanciera` consulta Yahoo Finance con `yfinance`. Intenta primero `fast_info` y usa `history(period="1d")` como fallback. Devuelve precio, variación, market cap, moneda, mercado, empresa y fuente cuando están disponibles.
 
 ## Endpoints
 
@@ -126,13 +122,11 @@ URLs:
 
 - `http://127.0.0.1:8000`
 - `http://127.0.0.1:8000/docs`
-- `http://127.0.0.1:8000/chat-ui`
 
-Variables opcionales:
+Variables opcionales (ver `.env.example`):
 
 ```bash
-export OPENAI_API_KEY="tu_api_key"
-export MODELO_LLM="gpt-4o-mini"
+export API_KEYS="mi-clave-secreta"          # activa autenticación
 export MAX_MENSAJES_HISTORIAL=30
 ```
 
@@ -140,13 +134,7 @@ export MAX_MENSAJES_HISTORIAL=30
 
 ```bash
 docker build -t api-agente-financiero .
-docker run --rm -p 8000:8000 api-agente-financiero
-```
-
-Con API key:
-
-```bash
-docker run --rm -p 8000:8000 -e OPENAI_API_KEY="tu_api_key" api-agente-financiero
+docker run --rm -p 8000:8000 -e API_KEYS="mi-clave" api-agente-financiero
 ```
 
 ## Tests
@@ -161,10 +149,25 @@ La suite cubre:
 - conversaciones independientes
 - contrato del endpoint chat
 - integración financiera mockeada
+- autenticación: auth deshabilitada, 401, 403, clave válida, rotación de claves
+- preguntas fuera del dominio financiero y meta-preguntas sobre el historial
+
+## Autenticación
+
+La API usa **API Key** en el header `X-API-Key`. Solo afecta a los endpoints `/chat`.
+`GET /` y `GET /health` son siempre públicos.
+
+Configurar claves válidas (separadas por coma para soportar rotación):
+
+```bash
+export API_KEYS="clave-produccion,clave-staging"
+```
+
+Si `API_KEYS` no está configurado, la autenticación está **deshabilitada** (ideal para desarrollo local).
 
 ## Ejemplos Curl
 
-Healthcheck:
+Healthcheck (público, sin auth):
 
 ```bash
 curl http://127.0.0.1:8000/health
@@ -175,6 +178,7 @@ Crear o continuar conversación:
 ```bash
 curl -X POST http://127.0.0.1:8000/chat \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: mi-clave-secreta" \
   -d '{"conversation_id":"abc123","mensaje":"¿Cómo está AAPL hoy?"}'
 ```
 
@@ -183,27 +187,17 @@ Consultar seguimiento usando historial:
 ```bash
 curl -X POST http://127.0.0.1:8000/chat \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: mi-clave-secreta" \
   -d '{"conversation_id":"abc123","mensaje":"¿Y su variación?"}'
-```
-
-Consultar otras acciones:
-
-```bash
-curl -X POST http://127.0.0.1:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"conversation_id":"msft-demo","mensaje":"MSFT"}'
-
-curl -X POST http://127.0.0.1:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"conversation_id":"tsla-demo","mensaje":"TSLA"}'
 ```
 
 Obtener historial:
 
 ```bash
-curl http://127.0.0.1:8000/chat/abc123
+curl http://127.0.0.1:8000/chat/abc123 \
+  -H "X-API-Key: mi-clave-secreta"
 ```
 
 ## Estado Actual
 
-No se implementan autenticación, base de datos real, Redis, docker compose, websocket ni streaming. La base queda simple, compatible con los contratos existentes y preparada para evolucionar hacia producción.
+No se implementan base de datos real, Redis, docker compose, websocket ni streaming. La base queda simple, compatible con los contratos existentes y preparada para evolucionar hacia producción.
