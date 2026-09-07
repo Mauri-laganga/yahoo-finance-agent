@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,24 +9,14 @@ class Configuracion(BaseSettings):
     version_app: str = "1.0.0"
     nivel_log: str = "INFO"
     max_mensajes_historial: int = 30
-    api_keys: frozenset[str] = Field(
-        default_factory=frozenset,
+    api_keys: str | None = Field(
+        default=None,
         validation_alias="API_KEYS",
         description=(
-            "Claves de API válidas, separadas por coma. "
-            "Si está vacío, la autenticación está deshabilitada."
+            "Claves de API válidas separadas por coma. "
+            "Si está vacío o no se configura, la autenticación está deshabilitada."
         ),
     )
-
-    @field_validator("api_keys", mode="before")
-    @classmethod
-    def parsear_api_keys(cls, valor: object) -> frozenset[str]:
-        """Parsea API_KEYS: acepta string CSV, colecciones o None."""
-        if not valor:
-            return frozenset()
-        if isinstance(valor, frozenset | set | list | tuple):
-            return frozenset(str(k).strip() for k in valor if str(k).strip())
-        return frozenset(k.strip() for k in str(valor).split(",") if k.strip())
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
